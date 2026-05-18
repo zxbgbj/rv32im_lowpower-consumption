@@ -1,0 +1,43 @@
+# Tool caches
+.Xil/
+work/
+vivado_proj/
+vivado_pspl_proj/
+vivado_pspl_handoff_proj/
+
+# Simulator outputs
+modelsim.ini
+transcript
+vsim.wlf
+wlft*
+
+# Vivado logs and journals
+vivado.log
+vivado.jou
+vivado_*.backup.log
+vivado_*.backup.jou
+*.log
+*.jou
+
+# Generated FPGA and handoff artifacts
+bitstreams/
+artifacts/
+*.bit
+BOOT.BIN
+*.hdf
+*.hwdef
+
+# Generated verification outputs
+verification/generated/
+verification/*.log
+verification/transcript
+
+# Generated script outputs
+scripts/transcript
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.drawio.bkp
+.$*.drawio.bkp

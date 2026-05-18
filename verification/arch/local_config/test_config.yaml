@@ -1,0 +1,9 @@
+name: rv32im-low-power-act4
+compiler_exe: riscv-none-elf-gcc
+objdump_exe: riscv-none-elf-objdump
+ref_model_exe: sail_riscv_sim
+ref_model_type: sail
+udb_config: rv32im-low-power.yaml
+linker_script: link.ld
+dut_include_dir: .
+include_priv_tests: false

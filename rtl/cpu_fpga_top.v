@@ -1,0 +1,267 @@
+// Module: cpu_fpga_top.
+// Role: minimal board wrapper for FPGA implementation and bring-up.
+module cpu_fpga_top (
+    input  wire clk,
+    input  wire rst,
+    output wire uart_tx,
+    input  wire uart_rx,
+    output wire heartbeat_led
+);
+    localparam [31:0] TOHOST_ADDR    = 32'h0000_0100;
+    localparam [2:0]  MSG_NONE       = 3'd0;
+    localparam [2:0]  MSG_BOOT       = 3'd1;
+    localparam [2:0]  MSG_PASS       = 3'd2;
+    localparam [2:0]  MSG_FAIL       = 3'd3;
+    localparam [2:0]  MSG_TRAP       = 3'd4;
+    localparam [1:0]  BOARD_RUNNING  = 2'd0;
+    localparam [1:0]  BOARD_PASS     = 2'd1;
+    localparam [1:0]  BOARD_FAIL     = 2'd2;
+    localparam [1:0]  BOARD_TRAP     = 2'd3;
+
+    wire rst_i = ~rst;
+
+    wire [31:0] imem_addr;
+    wire [31:0] dmem_addr;
+    wire [31:0] dmem_wdata;
+    wire [3:0]  dmem_we;
+    wire        fetch_valid;
+    wire [31:0] fetch_pc;
+    wire        predict_taken;
+    wire [31:0] predict_target;
+    wire        redirect_valid;
+    wire [31:0] redirect_pc;
+    wire [31:0] instr32;
+    wire [1:0]  instr_len;
+    wire        instr_is_compressed;
+    wire        issue_allow;
+    wire        ex_busy;
+    wire        ex_done;
+    wire        trap_valid;
+    wire [31:0] trap_pc;
+    wire        issue_stall;
+    wire        m_busy;
+    wire        m_done;
+    (* keep = "true" *) wire [31:0] activity_signature;
+    (* keep = "true" *) reg  [31:0] activity_shadow;
+    (* mark_debug = "true" *) wire        tohost_write;
+    (* mark_debug = "true" *) wire        tohost_event;
+    (* mark_debug = "true" *) reg  [31:0] latched_tohost_value;
+    (* mark_debug = "true" *) reg  [31:0] latched_trap_pc;
+    wire _unused_uart_rx;
+    reg  [26:0] heartbeat_counter;
+    reg  [1:0]  board_state;
+    reg         boot_pending;
+    reg         trap_reported;
+    reg         msg_pending_valid;
+    reg  [2:0]  msg_pending_kind;
+    reg  [31:0] msg_pending_value;
+    reg         msg_active;
+    reg  [2:0]  msg_kind;
+    reg  [4:0]  msg_index;
+    reg  [31:0] msg_value;
+    reg         uart_start;
+    reg  [7:0]  uart_data;
+    wire        uart_busy;
+    wire [7:0]  msg_char;
+    wire [4:0]  msg_last_index;
+
+    assign activity_signature =
+        imem_addr ^
+        dmem_addr ^
+        dmem_wdata ^
+        {28'd0, dmem_we} ^
+        fetch_pc ^
+        predict_target ^
+        redirect_pc ^
+        instr32 ^
+        trap_pc ^
+        {20'd0, instr_len, instr_is_compressed, fetch_valid, predict_taken,
+         redirect_valid, issue_allow, ex_busy, ex_done, trap_valid,
+         issue_stall, m_busy, m_done};
+    assign tohost_write = (|dmem_we) && (dmem_addr[31:2] == TOHOST_ADDR[31:2]);
+    assign tohost_event = tohost_write && (dmem_wdata != 32'd0);
+    assign _unused_uart_rx = uart_rx;
+
+    assign heartbeat_led =
+        (board_state == BOARD_PASS) ? 1'b1 :
+        ((board_state == BOARD_FAIL) || (board_state == BOARD_TRAP)) ? heartbeat_counter[22] :
+        heartbeat_counter[24];
+
+    assign msg_last_index =
+        (msg_kind == MSG_BOOT) ? 5'd5 :
+        (msg_kind == MSG_PASS) ? 5'd16 :
+        (msg_kind == MSG_FAIL) ? 5'd16 :
+        (msg_kind == MSG_TRAP) ? 5'd16 :
+        5'd0;
+
+    function [7:0] hex_ascii;
+        input [3:0] nibble;
+        begin
+            if (nibble < 4'd10) begin
+                hex_ascii = 8'h30 + nibble;
+            end else begin
+                hex_ascii = 8'h41 + (nibble - 4'd10);
+            end
+        end
+    endfunction
+
+    function [7:0] message_char;
+        input [2:0]  kind;
+        input [4:0]  index;
+        input [31:0] value;
+        begin
+            message_char = 8'h20;
+            case (kind)
+                MSG_BOOT: begin
+                    case (index)
+                        5'd0: message_char = "B";
+                        5'd1: message_char = "O";
+                        5'd2: message_char = "O";
+                        5'd3: message_char = "T";
+                        5'd4: message_char = 8'h0d;
+                        5'd5: message_char = 8'h0a;
+                        default: message_char = 8'h20;
+                    endcase
+                end
+                MSG_PASS,
+                MSG_FAIL,
+                MSG_TRAP: begin
+                    case (index)
+                        5'd0: message_char = (kind == MSG_PASS) ? "P" : ((kind == MSG_FAIL) ? "F" : "T");
+                        5'd1: message_char = (kind == MSG_PASS) ? "A" : ((kind == MSG_FAIL) ? "A" : "R");
+                        5'd2: message_char = (kind == MSG_PASS) ? "S" : ((kind == MSG_FAIL) ? "I" : "A");
+                        5'd3: message_char = (kind == MSG_PASS) ? "S" : ((kind == MSG_FAIL) ? "L" : "P");
+                        5'd4: message_char = (kind == MSG_PASS) ? 8'h20 : ((kind == MSG_FAIL) ? 8'h20 : 8'h20);
+                        5'd5: message_char = "0";
+                        5'd6: message_char = "x";
+                        5'd7: message_char = hex_ascii(value[31:28]);
+                        5'd8: message_char = hex_ascii(value[27:24]);
+                        5'd9: message_char = hex_ascii(value[23:20]);
+                        5'd10: message_char = hex_ascii(value[19:16]);
+                        5'd11: message_char = hex_ascii(value[15:12]);
+                        5'd12: message_char = hex_ascii(value[11:8]);
+                        5'd13: message_char = hex_ascii(value[7:4]);
+                        5'd14: message_char = hex_ascii(value[3:0]);
+                        5'd15: message_char = 8'h0d;
+                        5'd16: message_char = 8'h0a;
+                        default: message_char = 8'h20;
+                    endcase
+                end
+                default: begin
+                    message_char = 8'h20;
+                end
+            endcase
+        end
+    endfunction
+
+    assign msg_char = message_char(msg_kind, msg_index, msg_value);
+
+    always @(posedge clk) begin
+        if (rst_i) begin
+            activity_shadow <= 32'd0;
+            heartbeat_counter <= 27'd0;
+            board_state <= BOARD_RUNNING;
+            boot_pending <= 1'b1;
+            trap_reported <= 1'b0;
+            msg_pending_valid <= 1'b0;
+            msg_pending_kind <= MSG_NONE;
+            msg_pending_value <= 32'd0;
+            msg_active <= 1'b0;
+            msg_kind <= MSG_NONE;
+            msg_index <= 5'd0;
+            msg_value <= 32'd0;
+            uart_start <= 1'b0;
+            uart_data <= 8'd0;
+            latched_tohost_value <= 32'd0;
+            latched_trap_pc <= 32'd0;
+        end else begin
+            activity_shadow <= activity_signature;
+            heartbeat_counter <= heartbeat_counter + 27'd1;
+            uart_start <= 1'b0;
+
+            if (tohost_event) begin
+                latched_tohost_value <= dmem_wdata;
+                msg_pending_valid <= 1'b1;
+                msg_pending_kind <= (dmem_wdata == 32'd1) ? MSG_PASS : MSG_FAIL;
+                msg_pending_value <= dmem_wdata;
+                board_state <= (dmem_wdata == 32'd1) ? BOARD_PASS : BOARD_FAIL;
+            end else if (trap_valid && !trap_reported) begin
+                trap_reported <= 1'b1;
+                latched_trap_pc <= trap_pc;
+                msg_pending_valid <= 1'b1;
+                msg_pending_kind <= MSG_TRAP;
+                msg_pending_value <= trap_pc;
+                board_state <= BOARD_TRAP;
+            end
+
+            if (!msg_active) begin
+                if (boot_pending) begin
+                    boot_pending <= 1'b0;
+                    msg_active <= 1'b1;
+                    msg_kind <= MSG_BOOT;
+                    msg_index <= 5'd0;
+                    msg_value <= 32'd0;
+                end else if (msg_pending_valid) begin
+                    msg_pending_valid <= 1'b0;
+                    msg_active <= 1'b1;
+                    msg_kind <= msg_pending_kind;
+                    msg_index <= 5'd0;
+                    msg_value <= msg_pending_value;
+                end
+            end else if (!uart_busy) begin
+                uart_start <= 1'b1;
+                uart_data <= msg_char;
+                if (msg_index == msg_last_index) begin
+                    msg_active <= 1'b0;
+                    msg_kind <= MSG_NONE;
+                    msg_index <= 5'd0;
+                end else begin
+                    msg_index <= msg_index + 5'd1;
+                end
+            end
+        end
+    end
+
+    uart_tx #(
+        .CLK_FREQ_HZ(50_000_000),
+        .BAUD_RATE(115200)
+    ) board_uart_tx_u (
+        .clk(clk),
+        .rst(rst_i),
+        .start(uart_start),
+        .data(uart_data),
+        .tx(uart_tx),
+        .busy(uart_busy)
+    );
+
+    (* DONT_TOUCH = "TRUE", KEEP_HIERARCHY = "TRUE" *)
+    cpu_top #(
+        .IMEM_FILE("D:/Codex project/RISC-V CPU/rv32im_low_power_v5/verification/generated/smoke_tohost.hex"),
+        .DMEM_FILE("")
+    ) cpu_core_u (
+        .clk(clk),
+        .rst(rst_i),
+        .imem_addr(imem_addr),
+        .dmem_addr(dmem_addr),
+        .dmem_wdata(dmem_wdata),
+        .dmem_we(dmem_we),
+        .fetch_valid(fetch_valid),
+        .fetch_pc(fetch_pc),
+        .predict_taken(predict_taken),
+        .predict_target(predict_target),
+        .redirect_valid(redirect_valid),
+        .redirect_pc(redirect_pc),
+        .instr32(instr32),
+        .instr_len(instr_len),
+        .instr_is_compressed(instr_is_compressed),
+        .issue_allow(issue_allow),
+        .ex_busy(ex_busy),
+        .ex_done(ex_done),
+        .trap_valid(trap_valid),
+        .trap_pc(trap_pc),
+        .issue_stall(issue_stall),
+        .m_busy(m_busy),
+        .m_done(m_done)
+    );
+
+endmodule
