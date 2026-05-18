@@ -1,166 +1,123 @@
-# README v5
+# rv32im_low_power_v5
 
-## 1. Project Snapshot
+## 中文说明
 
-`rv32im_low_power_v5` is the current `v5` working branch of a low-power `RV32IM`
-soft CPU for `Xilinx Zynq-7000 XC7Z020`.
+### 1. 项目简介
 
-This version is no longer only an RTL sandbox. It already includes:
+`rv32im_low_power_v5` 是一个面向 FPGA 的低功耗 `RV32IM` 软核 CPU 项目，
+目标平台为 `Xilinx Zynq-7000 XC7Z020`。该处理器采用五级流水、单发射、
+顺序执行架构，当前仓库已经整理为适合版本管理和公开展示的 `v5` 主版本。
 
-- a verified 5-stage single-issue `RV32IM` core
-- minimal machine-mode privilege support
-- scripted RTL / ISA / arch-test / benchmark verification flows
-- FPGA implementation scripts and reports
-- PS+PL benchmark bring-up for `CoreMark` and `matrix_mul`
-- ready-made board artifacts such as `.bit`, `.hdf/.hwdef`, and `BOOT.BIN`
+这个版本不是单纯的 RTL 练习工程，而是一个已经具备较完整验证与实现链路的
+RISC-V 处理器项目，包含：
 
-The present project story is:
+- 五级流水 `RV32IM` 核心 RTL
+- 基本的 `M-mode / CSR / trap / mret / mcycle` 支持
+- hazard detection 与 forwarding 机制
+- `RV32M` 乘除法单元
+- 前端分支预测、`BTB` 与返回地址栈
+- 仿真、ISA、arch-test、benchmark 验证脚本
+- 面向 FPGA 的综合、实现与功耗/时序报告
+- 面向 `CoreMark` 与 `matrix_mul` 的板级验证路径
 
-1. complete correctness verification in simulation
-2. keep `v5` as the strongest board-bring-up candidate
-3. use `v2` as the low-resource / timing-reference branch
-4. continue with physical board validation on the Zynq-7020 platform
+### 2. 项目目标
 
-## 2. Design Goal
+本项目希望在有限 FPGA 资源下，完成一个结构清晰、可验证、可复现、可扩展的
+`RV32IM` 处理器实现，并尽量在以下目标之间取得平衡：
 
-Project goal:
+- 正确性
+- 性能
+- 低功耗
+- 工程可复现性
+- 板级落地能力
 
-- ISA: `RV32I + M`
-- microarchitecture: 5-stage, single-issue, in-order pipeline
-- board target: `Zynq-7020 XC7Z020`
-- toolchain: `Vivado 2018.3`, `ModelSim/Questa`, RISC-V GCC toolchain
-- direction: low power first, while pushing toward the performance target
+这既是一个处理器设计项目，也是一个逐步沉淀验证方法、性能迭代记录和 FPGA
+部署经验的工程化项目。
 
-Current privilege scope:
+### 3. 当前版本定位
 
-- minimal machine-mode only
-- implemented around `csr_file.v`
-- supports basic CSR access, trap entry, `mret`, and `mcycle`
+`v5` 是目前保留下来的成熟主版本，默认应视为后续工作的主要基线。
 
-Important note:
+默认工作理解：
 
-- historical project notes use a `CoreMark`-based convergence metric around
-  `250 iter/s @ 100 MHz`
-- that is a project-internal performance proxy, not a literal ISA-level `MIPS`
-  definition
+- ISA：`RV32I + M`
+- 架构：五级流水、单发射、顺序执行
+- 特权支持：最小 `M-mode`
+- 主要板级目标：`90m` 路线
+- 主要 benchmark：`CoreMark` 与 `matrix_mul`
 
-## 3. Why v5 Matters
+项目内部历史上做过多轮性能与功耗迭代，`v5` 是综合平衡最强的一版。根据已接
+受的基线记录，代表性结果包括：
 
-Among the preserved low-power iterations, `v5` is the strongest combined
-performance candidate currently kept in the repository.
+- `CoreMark 10 iter = 3968389 cycles`
+- `CoreMark avg = 396838.9 cycles/iter`
+- `matrix_mul = 582544 cycles`
+- 估计综合后吞吐约 `225.36 iter/s`
+- 估计 `fmax` 约 `89.43 MHz`
 
-From `version_comparison_report_v1_to_v5.md`:
+面向最终板级交付时，建议优先参考 `90m` 相关结果，而不是历史性的 `100m`
+探索版本。
 
-- `CoreMark avg`: `396838.9 cycles/iter`
-- normalized `100 MHz` view: about `252.00 iter/s`
-- estimated routed `fmax`: about `89.43 MHz`
-- estimated routed throughput: about `225.36 iter/s`
-- dynamic power: about `0.035 W`
+### 4. 仓库结构
 
-This means:
+- `rtl/`：核心 RTL、前端、流水级、乘除法单元、CSR、板级顶层封装
+- `tb/`：模块级与顶层 testbench
+- `verification/`：ISA、arch-test、benchmark、板级 benchmark 脚本
+- `scripts/`：ModelSim / Vivado / XSCT 相关脚本
+- `constraints/`：XDC 约束
+- `reports/`：综合、实现、时序、功耗、利用率报告
+- `docs/`：架构说明与设计笔记
+- `drawio/`：配图与结构图
+- `mem/`：本地测试和定向验证用的存储初始化文件
+- `software/ps_bench_reporter/`：PS 侧结果回读与串口打印程序
 
-- cycle efficiency has already crossed the internal `250 iter/s @ 100 MHz`
-  reference
-- the remaining bottleneck is routed frequency, not benchmark cycle count alone
+### 5. 核心实现特征
 
-Also important:
+#### 5.1 流水线
 
-- `improvement_report_19.md` records one later experiment
-- that experiment was rejected
-- the workspace was restored to the accepted round-17 baseline afterward
-- so the mainline `v5` RTL here should be treated as the accepted baseline for
-  board validation
+主核心位于 `rtl/cpu_top.v`，组织方式为标准五级流水：
 
-## 4. Directory Map
+- IF
+- ID
+- EX
+- MEM
+- WB
 
-- `rtl/`: core RTL, wrappers, BRAMs, predictor, CSR, M-unit, board tops
-- `tb/`: module-level and top-level testbenches
-- `verification/`: scripted ISA, arch-test, benchmark, and board-benchmark flow
-- `scripts/`: ModelSim and Vivado entry scripts
-- `constraints/`: XDC files for pure PL and PS+PL builds
-- `reports/`: implementation, timing, utilization, and power reports
-- `bitstreams/`: generated board-ready `.bit` files
-- `artifacts/`: exported handoff files and packaged boot images
-- `software/ps_bench_reporter/`: PS-side UART reporter application
-- `docs/`: architecture notes and draw.io diagrams
+配套实现包括：
 
-## 5. RTL Architecture
+- `hazard_unit.v`
+- `forward_unit.v`
+- `pipeline_regs.v`
+- `decoder_rv32im.v`
+- `ex_stage.v`
+- `mem_stage.v`
+- `wb_stage.v`
 
-### 5.1 Core Top
+#### 5.2 前端与预测
 
-The main CPU top is `rtl/cpu_top.v`.
-
-It integrates:
-
-- fetch front end
-- decode
-- ID/EX, EX/MEM, MEM/WB pipeline registers
-- hazard and forwarding logic
-- execute stage
-- memory stage
-- write-back stage
-- `RV32M` multiply/divide unit
-- branch predictor + BTB + return-address stack support
-- minimal CSR / trap path
-
-Visible top-level signals include:
-
-- instruction and data memory interfaces
-- fetch / prediction debug outputs
-- redirect outputs
-- issue stall / EX busy / M-unit status
-- trap outputs
-
-### 5.2 Front End
-
-`rtl/front_end.v` is the fetch-side control center.
-
-It contains:
+前端核心位于 `rtl/front_end.v`，集成：
 
 - `pc_manager.v`
 - `branch_predictor.v`
 - `btb.v`
-- a small return-address stack
+- 小型返回地址栈
 - `imem_bram.v`
 
-Behavior highlights:
+这一部分体现了项目相对很多教学型 RV32I 仓库更完整的地方：不仅有基本流水，
+还显式加入了前端预测与低功耗取指控制。
 
-- direct-mapped target prediction through `BTB`
-- conditional direction prediction through `BHT`
-- call/return-aware RAS handling
-- explicit `imem_en` gating for FPGA-friendly low-power fetch behavior
-- redirect handling from branch recovery, trap return, and direct jump correction
+#### 5.3 M 扩展与低功耗导向
 
-### 5.3 Decode / Execute / Memory
+`rtl/m_unit.v` 实现 `RV32M`，设计思路偏向 FPGA 友好与低功耗：
 
-Key files:
+- 乘法采用 DSP 友好映射
+- 除法/取余采用迭代状态机
 
-- `decoder_rv32im.v`: decodes `RV32I`, `RV32M`, CSR, `ecall`, `ebreak`, `mret`,
-  and `fence.i`
-- `imm_gen.v`: immediate generation
-- `hazard_unit.v`: hazard detection
-- `forward_unit.v`: forwarding selection
-- `ex_stage.v`: ALU, branch resolution, redirect/mispredict logic, CSR write
-  path, trap request generation
-- `mem_stage.v`: load/store handling
-- `wb_stage.v`: final write-back selection
+这样可以在保持功能完整的同时，避免高代价的全组合除法器。
 
-### 5.4 M Extension
+#### 5.4 CSR 与最小机器态支持
 
-`rtl/m_unit.v` implements the `M` extension.
-
-Low-power / FPGA-oriented direction:
-
-- multiplication is mapped in a DSP-friendly style
-- division and remainder use an iterative state machine
-- this keeps the pipeline simple and avoids unnecessary fully combinational
-  divider cost
-
-### 5.5 CSR and Trap Support
-
-`rtl/csr_file.v` is intentionally minimal.
-
-Implemented CSRs include:
+`rtl/csr_file.v` 实现了本项目所需的最小机器态支持，覆盖：
 
 - `mstatus`
 - `mtvec`
@@ -170,317 +127,122 @@ Implemented CSRs include:
 - `mcycle / mcycleh`
 - `cycle / cycleh`
 
-This is enough for:
+这足以支持：
 
-- trap entry
+- trap 进入
 - `mret`
-- cycle counting
-- basic machine-mode software execution
+- 周期计数
+- 基本 machine-mode 软件运行
 
-### 5.6 Memory Profile Switching
+### 6. 验证与 benchmark
 
-The memory profile is controlled by:
+本仓库不是只“跑通几个样例”，而是已经带有较系统的验证入口。
 
-- `rtl/memory_profile.vh`
-- `rtl/memory_profile_overrides.vh`
+通用执行 testbench 为 `tb/tb_cpu_top_isa.v`，可供以下流程复用：
 
-Default fallback values inside `memory_profile.vh` are:
+- smoke 测试
+- 本地 ISA 测试
+- official-source 适配测试
+- arch-test
+- benchmark
 
-- `IMEM = 1024 words`
-- `DMEM = 1024 words`
+常见脚本包括：
 
-But the currently checked-in override file is set to the board benchmark profile:
-
-- `IMEM = 8192 words`
-- `DMEM = 8192 words`
-
-So before running different flows, pay attention to:
-
-- `verification/set_verification_profile.ps1`
-- `verification/set_fpga_profile.ps1`
-- `verification/set_board_benchmark_profile.ps1`
-
-## 6. Board and Wrapper Tops
-
-This repository now contains multiple top-level integration styles.
-
-### 6.1 Pure PL Bring-Up
-
-`rtl/cpu_fpga_top.v` is the simpler FPGA wrapper.
-
-It provides:
-
-- heartbeat LED
-- PL UART output
-- `tohost`-based pass/fail reporting
-- trap reporting
-
-This top is suitable for:
-
-- pure PL smoke validation
-- lightweight board observation
-
-### 6.2 PL Benchmark Wrapper
-
-`rtl/cpu_board_pl.v` is the benchmark-oriented PL wrapper.
-
-It adds:
-
-- benchmark status packing
-- cycle count capture
-- `tohost` and signature observation
-- PS-visible status words
-- optional PL UART debug text
-
-Specialized wrappers:
-
-- `cpu_board_coremark_pl.v`
-- `cpu_board_matrix_pl.v`
-
-These wrappers bind the generated benchmark memory images directly into the
-core.
-
-### 6.3 PS+PL Tops
-
-Board-ready benchmark tops:
-
-- `rtl/cpu_pspl_coremark_top.v`
-- `rtl/cpu_pspl_matrix_top.v`
-
-They instantiate:
-
-- `processing_system7_0`
-- the corresponding PL benchmark wrapper
-
-In this flow:
-
-- PS7 provides the `80 MHz` clock and reset framework
-- PL still runs the RISC-V benchmark
-- PS GPIO reads benchmark status and cycle count
-- PS UART is the formal result channel
-
-### 6.4 PS Reporter Software
-
-`software/ps_bench_reporter/main.c` is the PS-side bare-metal reporter.
-
-It:
-
-- reads GPIO status exported from PL
-- prints benchmark name
-- prints cycle count
-- prints pass/fail/trap status over PS UART
-
-## 7. Verification Flow
-
-The generic execution bench is `tb/tb_cpu_top_isa.v`.
-
-It supports plusargs such as:
-
-- `IMEM_HEX`
-- `DMEM_HEX`
-- `TOHOST_ADDR`
-- `SIG_START`
-- `SIG_END`
-- `SIG_FILE`
-- `MAX_CYCLES`
-
-This makes it the common bridge for:
-
-- smoke tests
-- local ISA tests
-- official-source adapted tests
-- architecture tests
-- benchmarks
-
-### 7.1 Module and Directed Testbenches
-
-Representative module / directed TBs:
-
-- `tb_alu.v`
-- `tb_branch_predictor.v`
-- `tb_btb.v`
-- `tb_csr_file.v`
-- `tb_m_unit.v`
-- `tb_cpu_top_forwarding.v`
-- `tb_cpu_top_load_hazard.v`
-- `tb_cpu_top_control_flow.v`
-- `tb_cpu_top_m_extension.v`
-- `tb_cpu_top_mmode.v`
-- `tb_cpu_top_rv32im_full.v`
-
-Main launcher:
-
-```powershell
-cd "D:\Codex project\RISC-V CPU\rv32im_low_power_v5\scripts"
-.\run_modelsim_tb.ps1 -Testbench tb_cpu_top_rv32im_full
-```
-
-### 7.2 ISA and Architecture Verification
-
-Main verification entry points:
-
-- `verification/build_smoke_elf.ps1`
 - `verification/run_smoke_isa.ps1`
 - `verification/run_local_isa_suite.ps1`
-- `verification/run_official_local_suite.ps1`
 - `verification/run_riscv_tests.ps1`
-- `verification/build_arch_act4_elfs.ps1`
-- `verification/build_arch_act4_elfs_wsl.ps1`
 - `verification/run_arch_test.ps1`
-
-Recommended order:
-
-1. module and directed TBs
-2. smoke ELF flow
-3. local ISA suite
-4. adapted official local suite
-5. official `riscv-tests`
-6. arch-test build
-7. arch-test execution
-8. benchmark execution
-
-### 7.3 Benchmark Verification
-
-Main benchmark scripts:
-
-- `verification/run_matrix_benchmark.ps1`
 - `verification/run_coremark.ps1`
-- `verification/run_benchmark.ps1`
-
-Board-oriented benchmark scripts:
-
-- `verification/build_board_benchmark.ps1`
+- `verification/run_matrix_benchmark.ps1`
 - `verification/run_board_benchmark.ps1`
-- `verification/run_board_coremark.ps1`
 
-From the recorded board-profile simulation status:
+推荐验证顺序：
 
-- matrix benchmark: `PASS`, about `582552 cycles`
-- CoreMark (`10` iterations): `PASS`, `3975611 cycles`
+1. 模块级 testbench
+2. smoke
+3. 本地 ISA 套件
+4. `riscv-tests`
+5. arch-test
+6. benchmark
+7. 板级 benchmark
 
-## 8. FPGA Status
+### 7. FPGA 与板级状态
 
-### 8.1 Core v5 Implementation View
+当前仓库已经保留了 FPGA 相关脚本、封装和关键报告，可继续支撑板级验证工作。
 
-For the accepted `v5` core itself, the preserved comparison note reports:
+已知的实践结论包括：
 
-- `LUT as Logic = 3291`
-- `Slice LUTs = 3675`
-- `Registers = 2546`
-- `DSP = 12`
-- `BRAM = 2`
-- estimated `fmax = 89.43 MHz`
+- `v5` 是当前主要基线
+- `90m` 是最终更实用的板级目标
+- `100m` 更适合视为历史探索
+- `PS+PL` 路线是当前板级验证重点
+
+已记录的板级 benchmark 代表结果：
+
+- `CoreMark 10 iter = 3975611 cycles`
+- `matrix_mul = 582552 cycles`
+
+在板级验证上，一个已知 caveat 是：
+
+- 板载 `CH340` 串口路径不一定对应设计里使用的 `PS UART`
+
+因此在某些情况下，更可靠的证明方式是：
+
+- `JTAG / XSCT`
+- `GPIO` 状态字回读
+- `GPIO` 周期计数回读
+
+### 8. 适合谁阅读和继续开发
+
+这个仓库适合以下用途：
+
+- RISC-V 五级流水 CPU 课程或毕业设计参考
+- Verilog / FPGA 处理器项目展示
+- 低功耗导向处理器实现案例
+- 带 benchmark 与板级验证链路的教学型工程
+- 后续继续扩展 `privilege / SoC / board bring-up` 的基线工程
+
+### 9. 下一步建议
+
+如果继续推进 `v5`，比较建议的方向是：
+
+1. 补强公开仓库层面的使用说明和验证命令示例
+2. 继续沉淀 `90m` 板级验证证据
+3. 补充更标准化的 compliance / regression 结果
+4. 逐步加入更自动化的 CI 检查
+5. 继续整理 benchmark、功耗、时序结果的对外呈现
+
+---
+
+## English Summary
+
+`rv32im_low_power_v5` is a low-power FPGA-oriented `RV32IM` soft CPU targeting
+the `Xilinx Zynq-7000 XC7Z020`. It implements a 5-stage, single-issue,
+in-order pipeline with `RV32M`, basic machine-mode CSR/trap support, hazard
+detection, forwarding, branch prediction, benchmark flows, and FPGA build
+scripts.
+
+This repository already goes beyond a small RTL demo. It includes:
+
+- core RTL in `rtl/`
+- module and top-level testbenches in `tb/`
+- scripted ISA / arch-test / benchmark flows in `verification/`
+- Vivado / ModelSim / XSCT scripts in `scripts/`
+- FPGA timing, utilization, and power reports in `reports/`
+- architecture notes in `docs/`
+
+The `v5` branch should be treated as the main mature baseline. The preferred
+board-validation focus is the `90m` path, with `CoreMark` and `matrix_mul` as
+the main practical benchmark targets.
+
+Representative accepted metrics include:
+
+- `CoreMark 10 iter = 3968389 cycles`
+- `CoreMark avg = 396838.9 cycles/iter`
+- `matrix_mul = 582544 cycles`
 - estimated routed throughput `~225.36 iter/s`
-- dynamic power `~0.035 W`
+- estimated `fmax ~89.43 MHz`
 
-This is the best preserved high-performance / low-power balance among the
-archived candidate versions.
-
-### 8.2 PS+PL 80 MHz Build View
-
-The newer PS+PL benchmark top already closes timing at `80 MHz`.
-
-From `fpga_board_result_2.md` and the routed reports:
-
-- design: `cpu_pspl_coremark_top`
-- timing constraint: `12.500 ns` (`80 MHz`)
-- `WNS = 0.343 ns`
-- `TNS = 0`
-- `Slice LUTs = 3992`
-- `LUT as Logic = 3608`
-- `Slice Registers = 2751`
-- `Block RAM Tile = 16`
-- `DSP = 12`
-
-Power report summary:
-
-- total on-chip power: `1.710 W`
-- dynamic: `1.567 W`
-- static: `0.143 W`
-
-Important interpretation:
-
-- this power number is vector-less and low-confidence
-- PS7 dominates the total
-- PL benchmark hierarchy is only a small fraction of the total
-
-## 9. Existing Board Artifacts
-
-Important generated files:
-
-- `bitstreams/cpu_fpga_top_v5.bit`
-- `bitstreams/cpu_pspl_coremark_80m.bit`
-- `bitstreams/cpu_pspl_matrix_80m.bit`
-- `artifacts/pspl_coremark.hdf`
-- `artifacts/pspl_matrix.hdf`
-- `artifacts/BOOT_coremark.bin`
-- `artifacts/BOOT_matrix.bin`
-
-These already cover:
-
-- JTAG programming
-- SDK/XSCT handoff
-- boot image packaging for later QSPI solidification
-
-## 10. Current Project Status
-
-What is already complete:
-
-- soft-core RTL design
-- directed and ISA-level verification flow
-- arch-test flow integration
-- benchmark flow integration
-- multi-round performance iteration from `v1` to `v5`
-- `v5` PS+PL `80 MHz` build closure
-- bitstream and boot-image generation
-
-What is still pending:
-
-- physical board-side JTAG validation of the `80 MHz` PS+PL images
-- confirmation of `PS UART` output on the real board
-- capture of real board `CoreMark` and matrix result printouts
-- first `BOOT.BIN` / `QSPI` validation
-
-## 11. Suggested Next Step for v5 Validation
-
-If the next milestone is board validation, the most practical order is:
-
-1. JTAG-download `bitstreams/cpu_pspl_coremark_80m.bit`
-2. confirm `PS UART` prints `BOOT`, benchmark name, cycle count, and `PASS/FAIL`
-3. repeat with `bitstreams/cpu_pspl_matrix_80m.bit`
-4. compare on-board cycle reports with the recorded simulation baselines
-5. move to `artifacts/BOOT_coremark.bin` and `artifacts/BOOT_matrix.bin`
-6. attempt the first `QSPI` boot validation
-
-For this stage, the most important files are:
-
-- `fpga_board_result_2.md`
-- `verification/run_board_benchmark.ps1`
-- `verification/run_board_coremark.ps1`
-- `rtl/cpu_board_pl.v`
-- `rtl/cpu_pspl_coremark_top.v`
-- `rtl/cpu_pspl_matrix_top.v`
-- `software/ps_bench_reporter/main.c`
-
-## 12. Reading Order for a New Contributor
-
-Recommended reading order:
-
-1. `version_comparison_report_v1_to_v5.md`
-2. `fpga_board_result_2.md`
-3. `rtl/cpu_top.v`
-4. `rtl/front_end.v`
-5. `rtl/decoder_rv32im.v`
-6. `rtl/ex_stage.v`
-7. `rtl/m_unit.v`
-8. `rtl/csr_file.v`
-9. `tb/tb_cpu_top_isa.v`
-10. `verification/README.md`
-11. `docs/README.md`
-
-That reading order is enough to understand:
-
-- why `v5` was kept
-- how the pipeline is organized
-- how the benchmark flow works
-- where the board-validation work should continue next
+For board-level proof, note that the board-side `CH340` UART path may not
+always match the PS UART used by the design, so `JTAG / XSCT + GPIO readback`
+can be the more reliable validation route.
